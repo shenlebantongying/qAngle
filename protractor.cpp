@@ -1,94 +1,177 @@
 #include "protractor.h"
+#include <QGuiApplication>
+#include <QLayout>
 #include <QList>
-#include <QtMath>
-#include <cmath>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QWindow>
+#include <QtMath>
 
-const int HANDLE_W = 20;
-
-protractor::protractor(QWidget *) {
+protractor::protractor(QWidget*)
+{
     setAttribute(Qt::WA_TranslucentBackground);
     setMouseTracking(true);
     setFixedSize(400, 400);
-    handle_A = QRect(370, 200 - HANDLE_W / 2, HANDLE_W, HANDLE_W);
-    handle_B = QRect(50, 50, HANDLE_W, HANDLE_W);
+    A = QLineF(getCenterPoint(), QPoint(int(width() * 0.25), int(height() * 0.25)));
+    B = QLineF(getCenterPoint(), QPoint(int(width() * 0.75), int(height() * 0.5)));
 }
 
-void protractor::paintEvent(QPaintEvent *inEvent) {
+void protractor::paintEvent(QPaintEvent* inEvent)
+{
     Q_UNUSED(inEvent);
+
+    auto const static alpha = 240;
+    auto const static highLightColor = QColor(51, 166, 184); // Asagi-iro
 
     int w = this->width();
     int r = w / 2;
-    auto pen = new QPen(Qt::black,2);
+    auto pen = new QPen(Qt::black, 2);
     QPainter painter(this);
     painter.setPen(*pen);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    pen->setColor(Qt::green);
+    pen->setColor(QColor(0, 255, 0, alpha));
     painter.setPen(*pen);
-    painter.drawLine(0,200,400,200);
-    painter.drawLine(200,0,200,400);
 
-    pen->setColor(Qt::red);
+    auto cp = getCenterPoint();
+
+    // middle +
+    painter.drawLine(QPoint(cp.x() - 20, cp.y()), QPoint(cp.x() + 20, cp.y())); // vertical
+    painter.drawLine(QPoint(halfWidth(), cp.y() - 20), QPoint(halfWidth(), cp.y() + 20)); // horizontal
+
+    // 4 ticks around the circle
+    // TODO: more ticks?
+    // up right down left
+    painter.drawLine(QPoint(halfWidth(), 0), QPoint(halfWidth(), 20));
+    painter.drawLine(QPoint(width() - 20, cp.y()), QPoint(width(), cp.y()));
+    painter.drawLine(QPoint(halfWidth(), height()), QPoint(halfWidth(), height() - 20));
+    painter.drawLine(QPoint(0, cp.y()), QPoint(20, cp.y()));
+
+    painter.drawEllipse(geometry());
+
+    pen->setColor(QColor(255, 0, 0, alpha));
     painter.setPen(*pen);
-    painter.drawLine(QPoint(r, r), handle_A.center());
-    painter.drawLine(QPoint(r, r), handle_B.center());
+    painter.drawLine(QPoint(r, r), A.p2());
+    painter.drawLine(QPoint(r, r), B.p2());
 
-    painter.setPen(Qt::black);
-    painter.setBrush(QBrush(Qt::white));
-    painter.drawRect(handle_A);
-    painter.drawRect(handle_B);
+    pen->setColor(Qt::black);
+    painter.setPen(*pen);
 
-    // TODO: revise math here
-    int x1 = handle_A.center().x() - this->width() / 2;
-    int y1 = -(handle_A.center().y() - this->width() / 2);
-    int x2 = handle_B.center().x() - this->width() / 2;
-    int y2 = -(handle_B.center().y() - this->width() / 2);
-    int dot = x1 * x2 + y1 * y2;
-    int det = x1 * y2 - y1 * x2;
-
-    this->windowHandle()->setTitle(QString::number(round(qRadiansToDegrees(qAbs(std::atan2(det, dot)))))+QString("°"));
+    if (handle_A_MOVE || handl_B_MOVE) {
+        painter.setBrush(Qt::white);
+        painter.drawEllipse(getHandleRect(A.p2().toPoint()));
+        painter.drawEllipse(getHandleRect(B.p2().toPoint()));
+    } else if (cursor_on_A && !handle_A_MOVE) {
+        painter.setBrush(highLightColor);
+        painter.drawEllipse(getHandleRect(A.p2().toPoint()));
+        painter.setBrush(Qt::white);
+        painter.drawEllipse(getHandleRect(B.p2().toPoint()));
+    } else if (cursor_on_B && !handl_B_MOVE) {
+        painter.setBrush(Qt::white);
+        painter.drawEllipse(getHandleRect(A.p2().toPoint()));
+        painter.setBrush(highLightColor);
+        painter.drawEllipse(getHandleRect(B.p2().toPoint()));
+    } else {
+        painter.setBrush(Qt::white);
+        painter.drawEllipse(getHandleRect(A.p2().toPoint()));
+        painter.drawEllipse(getHandleRect(B.p2().toPoint()));
+    }
 }
 
+int protractor::halfWidth() const { return width() / 2; }
 
-void protractor::mouseMoveEvent(QMouseEvent *event) {
-    Q_UNUSED(event);
+int protractor::halfHeight() const { return height() / 2; }
 
+void protractor::mouseMoveEvent(QMouseEvent* event)
+{
     QPoint p = event->position().toPoint();
 
-    if (!this->geometry().contains(p)){
-        event->accept();
+    if (getHandleRect(A.p2().toPoint()).contains(p)) {
+        cursor_on_A = true;
+        cursor_on_B = false;
+    } else if (getHandleRect(B.p2().toPoint()).contains(p)) {
+        cursor_on_A = false;
+        cursor_on_B = true;
+    } else {
+        cursor_on_A = false;
+        cursor_on_B = false;
+    }
+
+    if (!this->geometry().contains(p)) {
         return;
     }
 
-    if (handle_A_MOVE) {
-        handle_A.moveCenter(p);
-
-    } else if (handl_B_MOVE) {
-        handle_B.moveCenter(p);
-    } else if (window_MOVE) {
-        this->windowHandle()->startSystemMove();
+    if (!handle_A_MOVE && !handl_B_MOVE) {
+        if (QLineF(p, getCenterPoint()).length() > halfWidth()) {
+            this->windowHandle()->startSystemMove();
+        }
+    } else {
+        // move 5 degree is shift is hold
+        if (QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier)) {
+            if (handle_A_MOVE) {
+                A.setP2(calcApproximateHandlePoint(p));
+            } else if (handl_B_MOVE) {
+                B.setP2(calcApproximateHandlePoint(p));
+            }
+        } else {
+            if (handle_A_MOVE) {
+                A.setP2(p);
+            } else if (handl_B_MOVE) {
+                B.setP2(p);
+            }
+        }
+        this->windowHandle()->setTitle(QString::number(getAngleBetweenLines()) + QString("°"));
     }
 
-    event->accept();
-
     update();
+    event->accept();
 }
 
-void protractor::mousePressEvent(QMouseEvent *ev) {
-    if (handle_A.contains(ev->position().toPoint())) {
+void protractor::mousePressEvent(QMouseEvent* ev)
+{
+    if (cursor_on_A) {
         handle_A_MOVE = true;
-    } else if (handle_B.contains(ev->position().toPoint())) {
+    } else if (cursor_on_B) {
         handl_B_MOVE = true;
-    } else {
-        window_MOVE = true;
-    };
+    }
     ev->accept();
 }
 
-void protractor::mouseReleaseEvent(QMouseEvent *event) {
+void protractor::mouseReleaseEvent(QMouseEvent* event)
+{
     handle_A_MOVE = false;
     handl_B_MOVE = false;
-    window_MOVE = false;
     event->accept();
+}
+
+double protractor::getAngleBetweenLines()
+{
+    // TODO: revise math here
+    auto x1 = int(A.p2().x() - this->width() / 2.0);
+    auto y1 = int(-(A.p2().y() - this->width() / 2.0));
+    auto x2 = int(B.p2().x() - this->width() / 2.0);
+    auto y2 = int(-(B.p2().y() - this->width() / 2.0));
+    int dot = x1 * x2 + y1 * y2;
+    int det = x1 * y2 - y1 * x2;
+
+    return round(qRadiansToDegrees(qAbs(std::atan2(det, dot))));
+}
+QPoint protractor::getCenterPoint() const
+{
+    return { halfWidth(), halfHeight() };
+}
+
+QPoint protractor::calcApproximateHandlePoint(QPoint point)
+{
+    double angle = QLineF(getCenterPoint(), point).angle();
+    int newAngle = ((int)std::round(angle / 5)) * 5;
+
+    QLineF tempLine = QLineF::fromPolar(QLineF(getCenterPoint(), point).length(), newAngle);
+    tempLine.translate(getCenterPoint());
+
+    return tempLine.p2().toPoint();
+}
+QRect protractor::getHandleRect(QPoint point)
+{
+    return { point.x() - handle_apothem, point.y() - handle_apothem, handle_width, handle_width };
 }
